@@ -95,7 +95,7 @@ def main():
     with col_header1:
         st.markdown('<div class="app-header">', unsafe_allow_html=True)
         st.markdown('<div class="big-title">Diamonds Price Predictor</div>', unsafe_allow_html=True)
-        st.markdown('<div class="subtitle">Prédiction d\'une colonne cible avec Decision Tree — uploadez votre dataset .csv pour commencer.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="subtitle">Prédiction d\'une colonne cible avec Decision Tree — utilisation du fichier de base (data/diamonds.csv).</div>', unsafe_allow_html=True)
         st.markdown('</div>', unsafe_allow_html=True)
     with col_header2:
         st.image('https://raw.githubusercontent.com/encharm/Font-Awesome-SVG-PNG/master/black/png/64/diamond.png', width=48)
@@ -103,8 +103,11 @@ def main():
     # Sidebar organized with expanders
     st.sidebar.header('Contrôles')
     with st.sidebar.expander('Données'):
-        uploaded_file = st.file_uploader('Uploader un fichier CSV', type=['csv'])
-        use_sample = st.checkbox("Charger le jeu d'exemple (Seaborn)")
+        st.write('Le dataset utilisé est le fichier de base : `data/diamonds.csv`')
+        if st.button('Recharger le dataset'):
+            # Vider le cache pour forcer le rechargement, puis relancer l'app
+            st.cache_data.clear()
+            st.experimental_rerun()
 
     with st.sidebar.expander('Configuration du modèle'):
         test_size = st.slider('Taille du jeu de test', 0.05, 0.5, 0.2, help='Fraction du dataset à utiliser pour le test')
@@ -120,21 +123,9 @@ def main():
     if 'last_metrics' not in st.session_state:
         st.session_state.last_metrics = None
 
-    df = None
-    if uploaded_file is not None:
-        try:
-            df = pd.read_csv(uploaded_file)
-            st.sidebar.success('Fichier chargé avec succès')
-        except Exception as e:
-            st.sidebar.error(f"Erreur lors du chargement du fichier: {e}")
-            st.stop()
-    elif use_sample:
-        df = load_data()
-        st.sidebar.info("Jeu d'exemple chargé depuis Seaborn")
-
-    if df is None:
-        st.info("Aucun dataset chargé. Uploadez un fichier CSV contenant la colonne `price` ou cochez 'Charger le jeu d'exemple' dans la barre latérale.")
-        st.stop()
+    # Utilisation du dataset de base (plus d'upload utilisateur)
+    df = load_data()
+    st.sidebar.info(f"Dataset chargé depuis `data/diamonds.csv` (lignes: {df.shape[0]}, colonnes: {df.shape[1]})")
 
     st.sidebar.write('Taille du dataset: ', df.shape)
     if st.sidebar.checkbox('Afficher les 5 premières lignes'):
@@ -180,21 +171,58 @@ def main():
             st.write(df[target].describe().to_frame())
 
         with st.expander('Visualisations avancées'):
-            st.subheader('Corrélation (heatmap)')
+            st.subheader('Visualisations avancées')
+            plot_type = st.selectbox('Type de graphique', options=['Correlation heatmap', 'Scatter matrix (pairplot)', 'Distribution', 'Boxplot'])
             try:
+                import plotly.express as px
+                import plotly.graph_objects as go
                 import matplotlib.pyplot as plt
-                corr_df = X[numeric_features].corr()
-                # Guard against empty or invalid correlation matrices
-                if corr_df.empty or corr_df.shape[0] < 2:
-                    st.info('Pas assez de colonnes numériques pour afficher une heatmap (au moins 2 sont requises).')
-                elif corr_df.isnull().all().all():
-                    st.info("La matrice de corrélation contient uniquement des valeurs manquantes ou constantes; impossible d'afficher la heatmap.")
-                else:
-                    fig, ax = plt.subplots(figsize=(6,4))
-                    sns.heatmap(corr_df, annot=True, fmt='.2f', cmap='coolwarm', ax=ax)
-                    st.pyplot(fig)
+
+                if plot_type == 'Correlation heatmap':
+                    corr_df = X[numeric_features].corr()
+                    if corr_df.empty or corr_df.shape[0] < 2:
+                        st.info('Pas assez de colonnes numériques pour afficher une heatmap (au moins 2 sont requises).')
+                    elif corr_df.isnull().all().all():
+                        st.info("La matrice de corrélation contient uniquement des valeurs manquantes ou constantes; impossible d'afficher la heatmap.")
+                    else:
+                        fig = px.imshow(corr_df, color_continuous_scale='RdBu', zmin=-1, zmax=1, template='plotly_dark')
+                        fig.update_layout(margin=dict(l=40,r=20,t=30,b=20), height=460)
+                        st.plotly_chart(fig, use_container_width=True)
+
+                elif plot_type == 'Scatter matrix (pairplot)':
+                    if len(numeric_features) < 2:
+                        st.info('Pas assez de colonnes numériques pour afficher un scatter matrix (au moins 2 sont requises).')
+                    else:
+                        cols = st.multiselect('Colonnes pour scatter matrix', options=numeric_features, default=numeric_features[:4])
+                        if cols:
+                            fig = px.scatter_matrix(X[cols], dimensions=cols, template='plotly_dark')
+                            fig.update_traces(diagonal_visible=False)
+                            fig.update_layout(height=600, margin=dict(t=20))
+                            st.plotly_chart(fig, use_container_width=True)
+
+                elif plot_type == 'Distribution':
+                    if not numeric_features:
+                        st.info('Aucune colonne numérique disponible pour les distributions.')
+                    else:
+                        col = st.selectbox('Choisir une colonne numérique', options=numeric_features)
+                        if col:
+                            fig = px.histogram(X, x=col, nbins=60, template='plotly_dark', color_discrete_sequence=["#06b6d4"], marginal='violin')
+                            fig.update_layout(height=460, margin=dict(t=10))
+                            st.plotly_chart(fig, use_container_width=True)
+
+                elif plot_type == 'Boxplot':
+                    if not categorical_features:
+                        st.info('Aucune colonne catégorielle disponible pour boxplot.')
+                    else:
+                        cat = st.selectbox('Choisir colonne catégorielle', options=categorical_features)
+                        val = st.selectbox('Variable numérique', options=numeric_features)
+                        if cat and val:
+                            fig = px.box(df, x=cat, y=val, template='plotly_dark', color_discrete_sequence=['#7c3aed'])
+                            fig.update_layout(height=460, margin=dict(t=10))
+                            st.plotly_chart(fig, use_container_width=True)
+
             except Exception as e:
-                st.write('Impossible d\'afficher la heatmap:', e)
+                st.write('Impossible d\'afficher les visualisations avancées:', e)
 
     preprocessor = build_preprocessor(X, numeric_features=numeric_features, categorical_features=categorical_features)
 
@@ -282,7 +310,7 @@ def main():
                     st.download_button('Télécharger le modèle (tuned)', f, file_name='model_tuned.joblib')
 
     st.sidebar.markdown('---')
-    st.sidebar.markdown('Guide de déploiement: pousser ce repo sur GitHub puis déployer sur Streamlit Cloud (https://streamlit.io) ou Heroku.')
+    st.sidebar.markdown('Copyright ©LPGentreprises')
 
 
 if __name__ == '__main__':
