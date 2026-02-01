@@ -65,17 +65,41 @@ def evaluate_model(pipe, X_test, y_test):
     return {'RMSE': rmse, 'MAE': mae, 'R2': r2}
 
 
-def get_feature_names(preprocessor, df):
-    # scikit-learn >=1.0 supports get_feature_names_out on ColumnTransformer
+def get_feature_names(preprocessor, input_features):
+    # Accept DataFrame or list of columns
+    if hasattr(input_features, 'columns'):
+        input_feat_list = input_features.columns.tolist()
+    else:
+        input_feat_list = list(input_features)
+
     try:
-        feature_names = preprocessor.get_feature_names_out(df.columns.tolist())
+        return preprocessor.get_feature_names_out(input_feat_list)
     except Exception:
-        # fallback: approximate
-        num = preprocessor.transformers_[0][2]
-        cat = preprocessor.transformers_[1][2]
-        cat_names = preprocessor.named_transformers_['cat'].get_feature_names_out(cat)
-        feature_names = list(num) + list(cat_names)
-    return feature_names
+        feature_names = []
+        for name, transformer, cols in getattr(preprocessor, 'transformers_', []):
+            if cols is None:
+                continue
+            if transformer == 'drop' or transformer is None:
+                continue
+            trans = preprocessor.named_transformers_.get(name)
+            # try to get names from transformer, otherwise fall back to original cols
+            if trans is not None and hasattr(trans, 'get_feature_names_out'):
+                try:
+                    fn = trans.get_feature_names_out(cols)
+                except Exception:
+                    fn = cols
+            elif trans is not None and hasattr(trans, 'get_feature_names'):
+                try:
+                    fn = trans.get_feature_names(cols)
+                except Exception:
+                    fn = cols
+            else:
+                fn = cols
+            if isinstance(fn, (list, tuple, np.ndarray)):
+                feature_names.extend(fn)
+            else:
+                feature_names.append(fn)
+        return feature_names
 
 
 # ----------------- Streamlit App -----------------
@@ -172,11 +196,16 @@ def main():
 
         with st.expander('Visualisations avancées'):
             st.subheader('Visualisations avancées')
-            plot_type = st.selectbox('Type de graphique', options=['Correlation heatmap', 'Scatter matrix (pairplot)', 'Distribution', 'Boxplot'])
+            plot_type = st.selectbox('Type de graphique', options=[
+                'Correlation heatmap', 'Scatter matrix (pairplot)', 'Histogramme (Distribution)', 'KDE (density)',
+                'Boxplot', 'Violin', 'Scatter (X vs Y)', 'Jointplot', 'Regression (trendline)',
+                'Countplot (cat)', 'Bar (cat vs agg)', 'Hexbin'
+            ])
             try:
                 import plotly.express as px
                 import plotly.graph_objects as go
                 import matplotlib.pyplot as plt
+                import seaborn as sns
 
                 if plot_type == 'Correlation heatmap':
                     corr_df = X[numeric_features].corr()
@@ -186,7 +215,7 @@ def main():
                         st.info("La matrice de corrélation contient uniquement des valeurs manquantes ou constantes; impossible d'afficher la heatmap.")
                     else:
                         fig = px.imshow(corr_df, color_continuous_scale='RdBu', zmin=-1, zmax=1, template='plotly_dark')
-                        fig.update_layout(margin=dict(l=40,r=20,t=30,b=20), height=460)
+                        fig.update_layout(margin=dict(l=40, r=20, t=30, b=20), height=460)
                         st.plotly_chart(fig, use_container_width=True)
 
                 elif plot_type == 'Scatter matrix (pairplot)':
@@ -200,15 +229,29 @@ def main():
                             fig.update_layout(height=600, margin=dict(t=20))
                             st.plotly_chart(fig, use_container_width=True)
 
-                elif plot_type == 'Distribution':
+                elif plot_type == 'Histogramme (Distribution)':
                     if not numeric_features:
                         st.info('Aucune colonne numérique disponible pour les distributions.')
                     else:
                         col = st.selectbox('Choisir une colonne numérique', options=numeric_features)
+                        nbins = st.slider('Nb bins', 10, 200, 60)
+                        marginal = st.selectbox('Marginal', options=['none', 'box', 'violin', 'rug'], index=2)
                         if col:
-                            fig = px.histogram(X, x=col, nbins=60, template='plotly_dark', color_discrete_sequence=["#06b6d4"], marginal='violin')
+                            fig = px.histogram(X, x=col, nbins=nbins, template='plotly_dark', color_discrete_sequence=["#06b6d4"], marginal=(None if marginal == 'none' else marginal))
                             fig.update_layout(height=460, margin=dict(t=10))
                             st.plotly_chart(fig, use_container_width=True)
+
+                elif plot_type == 'KDE (density)':
+                    if not numeric_features:
+                        st.info('Aucune colonne numérique disponible pour KDE.')
+                    else:
+                        col = st.selectbox('Choisir une colonne numérique (KDE)', options=numeric_features)
+                        if col:
+                            plt.figure(figsize=(8, 4))
+                            sns.kdeplot(data=X, x=col, fill=True, bw_adjust=0.5)
+                            plt.title(f'Density plot: {col}')
+                            st.pyplot(plt.gcf())
+                            plt.clf()
 
                 elif plot_type == 'Boxplot':
                     if not categorical_features:
@@ -221,8 +264,101 @@ def main():
                             fig.update_layout(height=460, margin=dict(t=10))
                             st.plotly_chart(fig, use_container_width=True)
 
+                elif plot_type == 'Violin':
+                    if not categorical_features or not numeric_features:
+                        st.info('Besoin d\'au moins une colonne catégorielle et une numérique pour un violin plot.')
+                    else:
+                        cat = st.selectbox('Choisir colonne catégorielle (violin)', options=categorical_features)
+                        val = st.selectbox('Variable numérique (violin)', options=numeric_features)
+                        if cat and val:
+                            fig = px.violin(df, x=cat, y=val, template='plotly_dark', color=cat)
+                            fig.update_layout(height=460, margin=dict(t=10))
+                            st.plotly_chart(fig, use_container_width=True)
+
+                elif plot_type == 'Scatter (X vs Y)':
+                    if len(numeric_features) < 2:
+                        st.info('Au moins 2 colonnes numériques sont nécessaires pour un scatter plot.')
+                    else:
+                        xcol = st.selectbox('X', options=numeric_features, index=0)
+                        ycol = st.selectbox('Y', options=numeric_features, index=1)
+                        color = None
+                        if categorical_features:
+                            color = st.selectbox('Colorer par (cat) - optionnel', options=[None] + categorical_features, index=0)
+                        if xcol and ycol:
+                            fig = px.scatter(df, x=xcol, y=ycol, color=(color if color else None), template='plotly_dark')
+                            fig.update_layout(height=500, margin=dict(t=20))
+                            st.plotly_chart(fig, use_container_width=True)
+
+                elif plot_type == 'Jointplot':
+                    if len(numeric_features) < 2:
+                        st.info('Au moins 2 colonnes numériques sont nécessaires pour un jointplot.')
+                    else:
+                        xcol = st.selectbox('X (jointplot)', options=numeric_features, index=0)
+                        ycol = st.selectbox('Y (jointplot)', options=numeric_features, index=1)
+                        kind = st.selectbox('Type de jointplot', options=['scatter', 'kde', 'hex'], index=0)
+                        if xcol and ycol:
+                            jp = sns.jointplot(x=xcol, y=ycol, data=df, kind=kind)
+                            st.pyplot(jp.fig)
+                            plt.clf()
+
+                elif plot_type == 'Regression (trendline)':
+                    if len(numeric_features) < 2:
+                        st.info('Au moins 2 colonnes numériques sont nécessaires pour une régression.')
+                    else:
+                        xcol = st.selectbox('X (regression)', options=numeric_features, index=0)
+                        ycol = st.selectbox('Y (regression)', options=numeric_features, index=1)
+                        if xcol and ycol:
+                            fig = px.scatter(df, x=xcol, y=ycol, trendline='ols', template='plotly_dark')
+                            fig.update_layout(height=500, margin=dict(t=20))
+                            st.plotly_chart(fig, use_container_width=True)
+
+                elif plot_type == 'Countplot (cat)':
+                    if not categorical_features:
+                        st.info('Aucune colonne catégorielle disponible pour un countplot.')
+                    else:
+                        cat = st.selectbox('Colonne catégorielle (count)', options=categorical_features)
+                        if cat:
+                            vc = df[cat].value_counts().reset_index()
+                            vc.columns = [cat, 'count']
+                            fig = px.bar(vc, x=cat, y='count', template='plotly_dark')
+                            fig.update_layout(height=460, margin=dict(t=10))
+                            st.plotly_chart(fig, use_container_width=True)
+
+                elif plot_type == 'Bar (cat vs agg)':
+                    if not categorical_features or not numeric_features:
+                        st.info('Besoin d\'au moins une colonne catégorielle et une numérique pour un bar aggregé.')
+                    else:
+                        cat = st.selectbox('Colonne catégorielle (bar)', options=categorical_features)
+                        val = st.selectbox('Variable numérique (bar)', options=numeric_features)
+                        agg = st.selectbox('Agg', options=['mean', 'median', 'sum', 'count'], index=0)
+                        if cat and val:
+                            if agg == 'count':
+                                agg_df = df.groupby(cat)[val].count().reset_index(name='count')
+                                ycol = 'count'
+                            else:
+                                agg_df = getattr(df.groupby(cat)[val], agg)().reset_index(name=val)
+                                ycol = val
+                            fig = px.bar(agg_df, x=cat, y=ycol, template='plotly_dark')
+                            fig.update_layout(height=460, margin=dict(t=10))
+                            st.plotly_chart(fig, use_container_width=True)
+
+                elif plot_type == 'Hexbin':
+                    if len(numeric_features) < 2:
+                        st.info('Au moins 2 colonnes numériques sont nécessaires pour un hexbin.')
+                    else:
+                        xcol = st.selectbox('X (hexbin)', options=numeric_features, index=0)
+                        ycol = st.selectbox('Y (hexbin)', options=numeric_features, index=1)
+                        if xcol and ycol:
+                            plt.figure(figsize=(6, 4))
+                            plt.hexbin(df[xcol], df[ycol], gridsize=35, cmap='Blues')
+                            plt.colorbar(label='counts')
+                            plt.xlabel(xcol)
+                            plt.ylabel(ycol)
+                            st.pyplot(plt.gcf())
+                            plt.clf()
+
             except Exception as e:
-                st.write('Impossible d\'afficher les visualisations avancées:', e)
+                st.error(f"Impossible d'afficher les visualisations avancées: {e}")
 
     preprocessor = build_preprocessor(X, numeric_features=numeric_features, categorical_features=categorical_features)
 
@@ -233,8 +369,8 @@ def main():
     with col1:
         st.subheader('Entraînement baseline')
         with st.form('baseline_form'):
-            max_depth = st.number_input('max_depth (None = pas de limite)', min_value=1, max_value=100, value=10)
-            min_samples_leaf = st.number_input('min_samples_leaf', min_value=1, max_value=50, value=1)
+            max_depth = st.number_input('max_depth (0 = pas de limite)', min_value=0, max_value=100, value=0, step=1, help='Mettre 0 pour pas de limite (None)')
+            min_samples_leaf = st.number_input('min_samples_leaf', min_value=1, max_value=50, value=1, step=1)
             submit_baseline = st.form_submit_button('Entraîner Decision Tree (baseline)')
         if submit_baseline:
             with st.spinner('Entraînement...'):
@@ -262,7 +398,8 @@ def main():
                 model_path = 'model_baseline.joblib'
                 joblib.dump(pipe, model_path)
                 with open(model_path, 'rb') as f:
-                    st.download_button('Télécharger le modèle (baseline)', f, file_name='model_baseline.joblib')
+                    data = f.read()
+                st.download_button('Télécharger le modèle (baseline)', data, file_name='model_baseline.joblib')
 
     with col2:
         st.subheader('Optimisation (RandomizedSearchCV)')
@@ -278,7 +415,7 @@ def main():
                     'model__max_depth': [None] + list(range(3, 30)),
                     'model__min_samples_split': list(range(2, 20)),
                     'model__min_samples_leaf': list(range(1, 20)),
-                    'model__max_features': [None, 'auto', 'sqrt', 'log2'],
+                    'model__max_features': [None, 'sqrt', 'log2'],
                     'model__criterion': ['squared_error', 'friedman_mse', 'absolute_error']
                 }
                 search = RandomizedSearchCV(pipe, param_distributions=param_dist, n_iter=int(n_iter_local), cv=int(cv_local), n_jobs=-1, scoring='neg_root_mean_squared_error', random_state=42, verbose=0)
@@ -307,10 +444,11 @@ def main():
                 model_path = 'model_tuned.joblib'
                 joblib.dump(best, model_path)
                 with open(model_path, 'rb') as f:
-                    st.download_button('Télécharger le modèle (tuned)', f, file_name='model_tuned.joblib')
+                    data = f.read()
+                st.download_button('Télécharger le modèle (tuned)', data, file_name='model_tuned.joblib')
 
     st.sidebar.markdown('---')
-    st.sidebar.markdown('Copyright ©LPGentreprises')
+    st.sidebar.markdown('Copyright ©LAÏKI PALAÏ Ghislain 2026')
 
 
 if __name__ == '__main__':

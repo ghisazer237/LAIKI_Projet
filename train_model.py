@@ -73,7 +73,7 @@ def tune_model(df, features, target='price', test_size=0.2, random_state=42, n_i
         'model__max_depth': [None] + list(range(3, 30)),
         'model__min_samples_split': list(range(2, 20)),
         'model__min_samples_leaf': list(range(1, 20)),
-        'model__max_features': [None, 'auto', 'sqrt', 'log2'],
+        'model__max_features': [None, 'sqrt', 'log2'],
         'model__criterion': ['squared_error', 'friedman_mse', 'absolute_error']
     }
     search = RandomizedSearchCV(pipe, param_distributions=param_dist, n_iter=n_iter, cv=cv, n_jobs=-1, scoring='neg_root_mean_squared_error', random_state=random_state)
